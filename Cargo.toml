@@ -1,6 +1,6 @@
 [package]
 name = "gatekeeper-members"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 authors = ["Mary Strodl <ipadlover8322@gmail.com>"]
 license = "MIT"

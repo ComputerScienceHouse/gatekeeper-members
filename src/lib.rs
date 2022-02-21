@@ -59,23 +59,32 @@ impl <'a> GateKeeperMemberListener<'a> {
                 .unwrap_or("http://localhost:3000".to_string()).to_string()
         });
     }
+
+    pub fn poll_for_user(&mut self) -> Option<String> {
+        let tag = self.nfc_device.first_tag();
+        if let Some(mut tag) = tag {
+            if self.just_scanned {
+                thread::sleep(Duration::from_millis(250));
+                return None;
+            }
+            if let Ok(association) = tag.authenticate(&mut self.realm) {
+                self.just_scanned = true;
+                return Some(association);
+            }
+        } else {
+            self.just_scanned = false;
+        }
+        return None;
+    }
+
     
     pub fn wait_for_user(&mut self) -> Option<String> {
         loop {
-            let tag = self.nfc_device.first_tag();
-            if let Some(mut tag) = tag {
-                if self.just_scanned {
-                    thread::sleep(Duration::from_millis(250));
-                    continue;
-                }
-                if let Ok(association) = tag.authenticate(&mut self.realm) {
-                    self.just_scanned = true;
-                    return Some(association);
-                }
+            if let Some(association) = self.poll_for_user() {
+                return Some(association);
             } else {
-                self.just_scanned = false;
+                thread::sleep(Duration::from_millis(250));
             }
-            thread::sleep(Duration::from_millis(250));
         }
     }
 
