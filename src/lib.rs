@@ -1,16 +1,13 @@
-extern crate serde;
-extern crate serde_json;
 extern crate libgatekeeper_sys;
-extern crate reqwest;
 
 use libgatekeeper_sys::{Nfc, NfcDevice, Realm};
-use std::time::Duration;
-use std::env;
-use std::thread;
-use serde_json::{Value};
-use std::result::Result;
-use reqwest::StatusCode;
 use reqwest::header::AUTHORIZATION;
+use reqwest::StatusCode;
+use serde_json::Value;
+use std::env;
+use std::result::Result;
+use std::thread;
+use std::time::Duration;
 
 pub struct GateKeeperMemberListener<'a> {
     nfc_device: NfcDevice<'a>,
@@ -75,7 +72,11 @@ impl RealmInfo {
         env::var(format!("GK_REALM_{}_PUBLIC_KEY", self.env_name())).unwrap()
     }
     fn get_asymmetric_private_key(&self) -> String {
-        env::var(format!("GK_REALM_{}_MOBILE_CRYPT_PRIVATE_KEY", self.env_name())).unwrap()
+        env::var(format!(
+            "GK_REALM_{}_MOBILE_CRYPT_PRIVATE_KEY",
+            self.env_name()
+        ))
+        .unwrap()
     }
     fn get_mobile_private_key(&self) -> String {
         env::var(format!("GK_REALM_{}_MOBILE_PRIVATE_KEY", self.env_name())).unwrap()
@@ -89,34 +90,46 @@ impl RealmInfo {
     }
 }
 
-impl <'a> GateKeeperMemberListener<'a> {
-    pub fn new_for_realm(nfc: &'a mut Nfc, conn_str: String, realm_detail: RealmInfo) -> Option<Self> {
-        let nfc_device = nfc.gatekeeper_device(conn_str)
-            .ok_or("failed to get gatekeeper device").unwrap();
+impl<'a> GateKeeperMemberListener<'a> {
+    pub fn new_for_realm(
+        nfc: &'a mut Nfc,
+        conn_str: String,
+        realm_detail: RealmInfo,
+    ) -> Option<Self> {
+        let nfc_device = nfc
+            .gatekeeper_device(conn_str)
+            .ok_or("failed to get gatekeeper device")
+            .unwrap();
 
         let realm = Realm::new(
-            realm_detail.get_id(), realm_detail.get_name(), "",
+            realm_detail.get_id(),
+            realm_detail.get_name(),
+            "",
             &realm_detail.get_auth_key(),
             &realm_detail.get_read_key(),
             // No write key:
             &"a".repeat(32),
             &realm_detail.get_public_key(),
             // No private key:
-            &format!("-----BEGIN EC PRIVATE KEY-----
-{}\n-----END EC PRIVATE KEY-----\n", "a".repeat(224)),
+            &format!(
+                "-----BEGIN EC PRIVATE KEY-----
+{}\n-----END EC PRIVATE KEY-----\n",
+                "a".repeat(224)
+            ),
             &realm_detail.get_mobile_private_key(),
             &realm_detail.get_asymmetric_private_key(),
-        ).unwrap();
+        )
+        .unwrap();
 
         return Some(GateKeeperMemberListener {
             nfc_device,
             realm,
             http: reqwest::blocking::Client::new(),
 
-            server_token: env::var("GK_SERVER_TOKEN").unwrap().to_string(),
+            server_token: env::var("GK_SERVER_TOKEN").unwrap(),
             just_scanned: false,
             endpoint: env::var("GK_HTTP_ENDPOINT")
-                .unwrap_or("http://localhost:3000".to_string()).to_string(),
+                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             route: realm_detail.get_route(),
         });
     }
@@ -135,10 +148,9 @@ impl <'a> GateKeeperMemberListener<'a> {
             self.just_scanned = true;
             return association;
         }
-        return None;
+        None
     }
 
-    
     pub fn wait_for_user(&mut self) -> Option<String> {
         loop {
             if let Some(association) = self.poll_for_user() {
@@ -150,33 +162,35 @@ impl <'a> GateKeeperMemberListener<'a> {
     }
 
     pub fn fetch_user(&mut self, key: String) -> Result<Value, FetchError> {
-        match self.http.get(
-            format!("{}/{}/by-key/{}", self.endpoint.clone(), self.route, &key)
-        ).header(AUTHORIZATION, self.server_token.clone()).send() {
-            Ok(res) => {
-                match res.status() {
-                    StatusCode::OK => {
-                        if let Ok(text) = res.text() {
-                            if let Ok(value) = serde_json::from_str(&text) {
-                                return Ok(value);
-                            } else {
-                                return Err(FetchError::ParseError);
-                            }
+        match self
+            .http
+            .get(format!(
+                "{}/{}/by-key/{}",
+                self.endpoint.clone(),
+                self.route,
+                &key
+            ))
+            .header(AUTHORIZATION, self.server_token.clone())
+            .send()
+        {
+            Ok(res) => match res.status() {
+                StatusCode::OK => {
+                    if let Ok(text) = res.text() {
+                        if let Ok(value) = serde_json::from_str(&text) {
+                            Ok(value)
                         } else {
-                            return Err(FetchError::ParseError);
+                            Err(FetchError::ParseError)
                         }
-                    },
-                    StatusCode::NOT_FOUND => {
-                        return Err(FetchError::NotFound);
-                    }
-                    _ => {
-                        return Err(FetchError::Unknown);
+                    } else {
+                        Err(FetchError::ParseError)
                     }
                 }
+                StatusCode::NOT_FOUND => Err(FetchError::NotFound),
+                _ => Err(FetchError::Unknown),
             },
             Err(err) => {
                 println!("Error fetching data for key: {:?}", err);
-                return Err(FetchError::NetworkError);
+                Err(FetchError::NetworkError)
             }
         }
     }
