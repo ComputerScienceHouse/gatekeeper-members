@@ -74,6 +74,12 @@ impl RealmInfo {
     fn get_public_key(&self) -> String {
         env::var(format!("GK_REALM_{}_PUBLIC_KEY", self.env_name())).unwrap()
     }
+    fn get_asymmetric_private_key(&self) -> String {
+        env::var(format!("GK_REALM_{}_MOBILE_CRYPT_PRIVATE_KEY", self.env_name())).unwrap()
+    }
+    fn get_mobile_private_key(&self) -> String {
+        env::var(format!("GK_REALM_{}_MOBILE_PRIVATE_KEY", self.env_name())).unwrap()
+    }
     fn get_id(&self) -> u8 {
         match self {
             RealmInfo::Doors => 0,
@@ -96,8 +102,10 @@ impl <'a> GateKeeperMemberListener<'a> {
             &"a".repeat(32),
             &realm_detail.get_public_key(),
             // No private key:
-            &format!("-----BEGIN EC PRIVATE KEY-----\
-{}\n-----END EC PRIVATE KEY-----\n", "a".repeat(224))
+            &format!("-----BEGIN EC PRIVATE KEY-----
+{}\n-----END EC PRIVATE KEY-----\n", "a".repeat(224)),
+            &realm_detail.get_mobile_private_key(),
+            &realm_detail.get_asymmetric_private_key(),
         ).unwrap();
 
         return Some(GateKeeperMemberListener {
@@ -118,18 +126,14 @@ impl <'a> GateKeeperMemberListener<'a> {
     }
 
     pub fn poll_for_user(&mut self) -> Option<String> {
-        let tag = self.nfc_device.first_tag();
-        if let Some(mut tag) = tag {
-            if self.just_scanned {
-                thread::sleep(Duration::from_millis(250));
-                return None;
-            }
-            if let Ok(association) = tag.authenticate(&mut self.realm) {
-                self.just_scanned = true;
-                return Some(association);
-            }
-        } else {
+        if self.just_scanned {
+            thread::sleep(Duration::from_millis(250));
             self.just_scanned = false;
+        }
+        let association = self.nfc_device.authenticate_tag(&mut self.realm);
+        if let Ok(association) = association {
+            self.just_scanned = true;
+            return association;
         }
         return None;
     }
