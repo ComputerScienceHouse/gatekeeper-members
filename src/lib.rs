@@ -1,6 +1,5 @@
-extern crate libgatekeeper_sys;
-
-use libgatekeeper_sys::{Nfc, NfcDevice, Realm};
+pub use gatekeeper_core::RealmType;
+use gatekeeper_core::{GatekeeperReader, NfcTag, Realm, UndifferentiatedTag};
 use reqwest::header::AUTHORIZATION;
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -10,10 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 pub struct GateKeeperMemberListener<'a> {
-    nfc_device: NfcDevice<'a>,
+    nfc_device: GatekeeperReader<'a>,
     http: reqwest::blocking::Client,
-
-    realm: Realm,
 
     // Passed to GK-MQTT to resolve users
     server_token: String,
@@ -34,134 +31,111 @@ pub enum FetchError {
     Unknown,
 }
 
-pub enum RealmInfo {
-    Drink,
-    MemberProjects,
-    Doors,
+trait RealmTypeExt {
+    fn get_route(&self) -> &'static str;
+    fn env_name(&self) -> &'static str;
+    fn get_auth_key(&self) -> Vec<u8>;
+    fn get_read_key(&self) -> Vec<u8>;
+    fn get_desfire_signing_public_key(&self) -> Vec<u8>;
+    fn get_mobile_decryption_private_key(&self) -> Vec<u8>;
+    fn get_mobile_signing_private_key(&self) -> Vec<u8>;
 }
 
-impl RealmInfo {
+impl RealmTypeExt for RealmType {
     fn get_route(&self) -> &'static str {
         match self {
-            RealmInfo::Drink => "drink",
-            RealmInfo::Doors => "doors",
-            RealmInfo::MemberProjects => "projects",
-        }
-    }
-    fn get_name(&self) -> &'static str {
-        match self {
-            RealmInfo::Doors => "Doors",
-            RealmInfo::Drink => "Drink",
-            RealmInfo::MemberProjects => "Member Projects",
+            Self::Door => "doors",
+            Self::Drink => "drink",
+            Self::MemberProjects => "projects",
         }
     }
     fn env_name(&self) -> &'static str {
         match self {
-            RealmInfo::Drink => "DRINK",
-            RealmInfo::Doors => "DOORS",
-            RealmInfo::MemberProjects => "MEMBER_PROJECTS",
+            Self::Door => "DOORS",
+            Self::Drink => "DRINK",
+            Self::MemberProjects => "MEMBER_PROJECTS",
         }
     }
-    fn get_auth_key(&self) -> String {
-        env::var(format!("GK_REALM_{}_AUTH_KEY", self.env_name())).unwrap()
+    fn get_auth_key(&self) -> Vec<u8> {
+        env::var(format!("GK_REALM_{}_AUTH_KEY", self.env_name()))
+            .unwrap()
+            .into_bytes()
     }
-    fn get_read_key(&self) -> String {
-        env::var(format!("GK_REALM_{}_READ_KEY", self.env_name())).unwrap()
+    fn get_read_key(&self) -> Vec<u8> {
+        env::var(format!("GK_REALM_{}_READ_KEY", self.env_name()))
+            .unwrap()
+            .into_bytes()
     }
-    fn get_public_key(&self) -> String {
-        env::var(format!("GK_REALM_{}_PUBLIC_KEY", self.env_name())).unwrap()
+    fn get_desfire_signing_public_key(&self) -> Vec<u8> {
+        env::var(format!("GK_REALM_{}_PUBLIC_KEY", self.env_name()))
+            .unwrap()
+            .into_bytes()
     }
-    fn get_asymmetric_private_key(&self) -> String {
+    fn get_mobile_decryption_private_key(&self) -> Vec<u8> {
         env::var(format!(
             "GK_REALM_{}_MOBILE_CRYPT_PRIVATE_KEY",
             self.env_name()
         ))
         .unwrap()
+        .into_bytes()
     }
-    fn get_mobile_private_key(&self) -> String {
-        env::var(format!("GK_REALM_{}_MOBILE_PRIVATE_KEY", self.env_name())).unwrap()
-    }
-    fn get_id(&self) -> u8 {
-        match self {
-            RealmInfo::Doors => 0,
-            RealmInfo::Drink => 1,
-            RealmInfo::MemberProjects => 2,
-        }
+    fn get_mobile_signing_private_key(&self) -> Vec<u8> {
+        env::var(format!("GK_REALM_{}_MOBILE_PRIVATE_KEY", self.env_name()))
+            .unwrap()
+            .into_bytes()
     }
 }
 
 impl<'a> GateKeeperMemberListener<'a> {
-    pub fn new_for_realm(
-        nfc: &'a mut Nfc,
-        conn_str: String,
-        realm_detail: RealmInfo,
-    ) -> Option<Self> {
-        let nfc_device = nfc
-            .gatekeeper_device(conn_str)
-            .ok_or("failed to get gatekeeper device")
-            .unwrap();
-
+    pub fn new(conn_str: String, realm_type: RealmType) -> Option<Self> {
         let realm = Realm::new(
-            realm_detail.get_id(),
-            realm_detail.get_name(),
-            "",
-            &realm_detail.get_auth_key(),
-            &realm_detail.get_read_key(),
-            // No write key:
-            &"a".repeat(32),
-            &realm_detail.get_public_key(),
-            // No private key:
-            &format!(
-                "-----BEGIN EC PRIVATE KEY-----
-{}\n-----END EC PRIVATE KEY-----\n",
-                "a".repeat(224)
-            ),
-            &realm_detail.get_mobile_private_key(),
-            &realm_detail.get_asymmetric_private_key(),
-        )
-        .unwrap();
+            realm_type,
+            realm_type.get_auth_key(),
+            realm_type.get_read_key(),
+            &realm_type.get_desfire_signing_public_key(),
+            &realm_type.get_mobile_decryption_private_key(),
+            &realm_type.get_mobile_signing_private_key(),
+            None,
+        );
 
-        return Some(GateKeeperMemberListener {
-            nfc_device,
-            realm,
+        Some(GateKeeperMemberListener {
+            nfc_device: GatekeeperReader::new(conn_str, realm)?,
             http: reqwest::blocking::Client::new(),
 
             server_token: env::var("GK_SERVER_TOKEN").unwrap(),
             just_scanned: false,
             endpoint: env::var("GK_HTTP_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
-            route: realm_detail.get_route(),
-        });
+            route: realm_type.get_route(),
+        })
     }
 
-    pub fn new(nfc: &'a mut Nfc, conn_str: String) -> Option<Self> {
-        Self::new_for_realm(nfc, conn_str, RealmInfo::MemberProjects)
+    pub fn poll_for_tag(&mut self) -> Option<UndifferentiatedTag> {
+        let nearby_tags = self.nfc_device.get_nearby_tags();
+        if nearby_tags.is_empty() {
+            self.just_scanned = false;
+        }
+        if self.just_scanned {
+            thread::sleep(Duration::from_millis(250));
+            return None;
+        }
+        self.just_scanned = !nearby_tags.is_empty();
+        nearby_tags.into_iter().next()
     }
 
     pub fn poll_for_user(&mut self) -> Option<String> {
-        if self.just_scanned {
-            thread::sleep(Duration::from_millis(250));
-            self.just_scanned = false;
-        }
-        let association = self.nfc_device.authenticate_tag(&mut self.realm);
-        if let Ok(association) = association {
-            self.just_scanned = true;
-            return association;
-        }
-        None
+        self.poll_for_tag().and_then(|tag| tag.authenticate().ok())
     }
 
     pub fn wait_for_user(&mut self) -> Option<String> {
         loop {
             if let Some(association) = self.poll_for_user() {
                 return Some(association);
-            } else {
-                thread::sleep(Duration::from_millis(250));
             }
         }
     }
 
-    pub fn fetch_user(&mut self, key: String) -> Result<Value, FetchError> {
+    pub fn fetch_user(&self, key: String) -> Result<Value, FetchError> {
         match self
             .http
             .get(format!(
